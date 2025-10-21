@@ -161,6 +161,148 @@ func (c *RAGClient) QueryStream(question string, options *RAGQueryOptions) (<-ch
 	return resultChan, errorChan
 }
 
+// QueryStreamMessages executes a RAG query and returns Message objects stream
+func (c *RAGClient) QueryStreamMessages(question string, options *RAGQueryOptions) (<-chan *Message, <-chan error) {
+	messageChan := make(chan *Message, 100)
+	errorChan := make(chan error, 1)
+
+	go func() {
+		defer close(messageChan)
+		defer close(errorChan)
+
+		if options == nil {
+			options = &RAGQueryOptions{OutputFormat: "stream-json"}
+		} else {
+			// Ensure using stream-json format
+			options = &RAGQueryOptions{
+				OutputFormat: "stream-json",
+				Agentic:      options.Agentic,
+				ProductMode:  options.ProductMode,
+				Model:        options.Model,
+				Timeout:      options.Timeout,
+			}
+		}
+
+		cmd := c.buildCommand(options)
+
+		execCmd := exec.Command(cmd[0], cmd[1:]...)
+
+		// Set up input
+		stdin, err := execCmd.StdinPipe()
+		if err != nil {
+			errorChan <- &RAGError{Message: fmt.Sprintf("创建stdin失败: %v", err)}
+			return
+		}
+
+		// Set up output
+		stdout, err := execCmd.StdoutPipe()
+		if err != nil {
+			errorChan <- &RAGError{Message: fmt.Sprintf("创建stdout失败: %v", err)}
+			return
+		}
+
+		// Start command
+		if err := execCmd.Start(); err != nil {
+			errorChan <- &RAGError{Message: fmt.Sprintf("启动命令失败: %v", err)}
+			return
+		}
+
+		// Write question
+		go func() {
+			defer stdin.Close()
+			stdin.Write([]byte(question))
+		}()
+
+		// Stream read output
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+
+			message := &Message{}
+			if err := message.FromJSON(line); err != nil {
+				// Skip invalid JSON lines
+				continue
+			}
+			messageChan <- message
+		}
+
+		if err := scanner.Err(); err != nil {
+			errorChan <- &RAGError{Message: fmt.Sprintf("读取输出失败: %v", err)}
+			return
+		}
+
+		// Wait for command completion
+		if err := execCmd.Wait(); err != nil {
+			if execCmd.ProcessState != nil {
+				errorChan <- &ExecutionError{
+					Message:  fmt.Sprintf("命令执行失败"),
+					ExitCode: execCmd.ProcessState.ExitCode(),
+				}
+			} else {
+				errorChan <- &RAGError{Message: fmt.Sprintf("命令执行失败: %v", err)}
+			}
+		}
+	}()
+
+	return messageChan, errorChan
+}
+
+// QueryCollectMessages executes a query and returns a RAGResponse with Message stream
+func (c *RAGClient) QueryCollectMessages(question string, options *RAGQueryOptions) (*RAGResponse, error) {
+	var contentParts []string
+	var contexts []string
+	var metadata map[string]interface{}
+	tokensInfo := map[string]int{"input": 0, "generated": 0}
+
+	messageChan, errorChan := c.QueryStreamMessages(question, options)
+
+	for {
+		select {
+		case message, ok := <-messageChan:
+			if !ok {
+				// Channel closed, build response
+				answer := strings.Join(contentParts, "")
+				
+				// Add token info to metadata
+				if metadata == nil {
+					metadata = make(map[string]interface{})
+				}
+				metadata["tokens"] = tokensInfo
+
+				return &RAGResponse{
+					Success:  true,
+					Answer:   answer,
+					Contexts: contexts,
+					Error:    "",
+				}, nil
+			}
+
+			if message.IsContent() {
+				contentParts = append(contentParts, message.GetContent())
+			} else if message.IsContexts() {
+				contexts = append(contexts, message.GetContexts()...)
+			} else if message.IsEnd() {
+				metadata = message.GetMetadata()
+			} else if tokens := message.GetTokens(); tokens != nil {
+				tokensInfo["input"] += tokens.Input
+				tokensInfo["generated"] += tokens.Generated
+			}
+
+		case err, ok := <-errorChan:
+			if ok && err != nil {
+				return &RAGResponse{
+					Success: false,
+					Answer:  "",
+					Error:   err.Error(),
+				}, err
+			}
+		}
+	}
+}
+
 func (c *RAGClient) buildCommand(options *RAGQueryOptions) []string {
 	cmd := []string{"auto-coder.rag", "run", "--doc_dir", c.config.DocDir}
 
