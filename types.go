@@ -3,6 +3,8 @@ package ragclient
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"runtime"
 	"time"
 )
 
@@ -10,8 +12,14 @@ import (
 type RAGConfig struct {
 	DocDir string
 
+	// Command path (optional, default is "auto-coder.rag")
+	CommandPath string
+
 	// Model configuration
 	Model string
+	
+	// Model configuration file path
+	ModelFile string
 	
 	// Timeout configuration (seconds)
 	Timeout int
@@ -20,7 +28,7 @@ type RAGConfig struct {
 	RagContextWindowLimit  int
 	FullTextRatio          float64
 	SegmentRatio           float64
-	RagDocFilterRelevance  int
+	RagDocFilterRelevance  float64
 
 	// Mode selection
 	Agentic     bool
@@ -45,18 +53,27 @@ type RAGConfig struct {
 	// Other parameters
 	RequiredExts string
 	RayAddress   string
+	
+	// Environment variables for subprocess
+	Envs map[string]string
+	
+	// Automatically add Windows UTF-8 environment variables (default: false)
+	// When true on Windows, adds: PYTHONIOENCODING=utf-8, LANG=zh_CN.UTF-8, LC_ALL=zh_CN.UTF-8, CHCP=65001
+	WindowsUtf8Env bool
 }
 
 // NewRAGConfig creates a new RAG configuration with defaults
 func NewRAGConfig(docDir string) *RAGConfig {
 	return &RAGConfig{
 		DocDir:                 docDir,
+		CommandPath:            "auto-coder.rag",
 		Model:                  "v3_chat",
+		ModelFile:              "",
 		Timeout:                300,  // 默认5分钟
 		RagContextWindowLimit:  56000,
 		FullTextRatio:          0.7,
 		SegmentRatio:           0.2,
-		RagDocFilterRelevance:  5,
+		RagDocFilterRelevance:  0.0,
 		Agentic:                false,
 		ProductMode:            "lite",
 		EnableHybridIndex:      false,
@@ -72,7 +89,9 @@ type RAGQueryOptions struct {
 	Agentic      *bool
 	ProductMode  string
 	Model        string
-	Timeout      *int   // Timeout in seconds (overrides config)
+	ModelFile    string            // Model configuration file path (overrides config)
+	Timeout      *int              // Timeout in seconds (overrides config)
+	Envs         map[string]string // Environment variables for this specific query (overrides global config)
 }
 
 // RAGResponse represents a RAG query response
@@ -304,3 +323,77 @@ func (e *ExecutionError) Error() string {
 	return e.Message
 }
 
+// AppendPath appends a path to the PATH environment variable in a cross-platform way
+func AppendPath(additionalPath string, currentPath string) string {
+	delimiter := ":"
+	if runtime.GOOS == "windows" {
+		delimiter = ";"
+	}
+	if currentPath == "" {
+		currentPath = os.Getenv("PATH")
+	}
+	if currentPath == "" {
+		return additionalPath
+	}
+	return currentPath + delimiter + additionalPath
+}
+
+// PrependPath prepends a path to the PATH environment variable in a cross-platform way
+func PrependPath(additionalPath string, currentPath string) string {
+	delimiter := ":"
+	if runtime.GOOS == "windows" {
+		delimiter = ";"
+	}
+	if currentPath == "" {
+		currentPath = os.Getenv("PATH")
+	}
+	if currentPath == "" {
+		return additionalPath
+	}
+	return additionalPath + delimiter + currentPath
+}
+
+// TokenCountFileResult represents token count result for a single file
+type TokenCountFileResult struct {
+	File       string `json:"file"`
+	Characters int    `json:"characters"`
+	Tokens     int    `json:"tokens"`
+}
+
+// TokenCountResult represents token count result containing all files and total
+type TokenCountResult struct {
+	Files           []TokenCountFileResult `json:"files"`
+	TotalCharacters int                    `json:"totalCharacters"`
+	TotalTokens     int                    `json:"totalTokens"`
+	RawOutput       string                 `json:"-"`
+}
+
+// TokenCountOptions represents options for token counting
+type TokenCountOptions struct {
+	// Path to the tokenizer file (optional, uses default if not provided)
+	TokenizerPath string
+	// Timeout in seconds (default: 60)
+	Timeout int
+	// Environment variables for the subprocess
+	Envs map[string]string
+}
+
+
+// TextDocument represents a text document for NewRAGClientFromTexts
+//
+// Used to pass multiple documents when creating a RAG client.
+//
+// Example:
+//
+//	doc := ragclient.TextDocument{
+//	    Content:  "This is document content...",
+//	    Filename: "doc.md",
+//	}
+type TextDocument struct {
+	// Document content (required)
+	Content string
+	// Filename (optional, auto-generated if empty)
+	Filename string
+	// File encoding (default: utf-8)
+	Encoding string
+}

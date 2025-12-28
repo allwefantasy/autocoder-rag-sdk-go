@@ -79,6 +79,38 @@ func main() {
 }
 ```
 
+### 自定义命令路径
+
+如果你的 `auto-coder.rag` 命令安装在非标准位置，可以通过 `CommandPath` 配置项指定命令路径：
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    
+    ragclient "github.com/autocoder/rag-sdk-go"
+)
+
+func main() {
+    config := ragclient.NewRAGConfig("/path/to/docs")
+    config.CommandPath = "/usr/local/bin/auto-coder.rag"
+
+    client, err := ragclient.NewRAGClientWithConfig(config)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    answer, err := client.Query("如何使用这个项目?", nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(answer)
+}
+```
+
 ### 高级配置
 
 ```go
